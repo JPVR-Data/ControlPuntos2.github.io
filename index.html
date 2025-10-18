@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Escanear DNI - Nuna Orgánica</title>
+  <meta name="robots" content="noindex">
+  <style>
+    :root{--nuna-yellow:#f4b844;--black:#111;--bg:#fff8ec;--card:#fff;--muted:#555}
+    *{box-sizing:border-box}
+    body{font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);margin:0;padding:20px;color:var(--black)}
+    .wrap{max-width:860px;margin:0 auto}
+    .card{background:var(--card);padding:22px;border-radius:12px;box-shadow:0 8px 30px rgba(10,20,30,0.06)}
+    header{display:flex;gap:16px;align-items:center;margin-bottom:12px}
+    .logo{width:64px;height:64px;border-radius:12px;background:linear-gradient(135deg,var(--nuna-yellow),#eaa936);display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:20px;box-shadow:0 6px 18px rgba(0,0,0,0.08)}
+    .controls{display:flex;gap:12px;align-items:center;margin-top:10px}
+    select,.small-input{padding:10px 12px;border-radius:8px;border:1px solid #ddd;font-size:14px}
+    .status{margin-top:16px;padding:12px;border-radius:10px;background:#f0f4f7;color:var(--black)}
+    .ok{background:#e7fbe9;color:#0a6b2f}
+    .err{background:#fff0f0;color:#8b1e1e}
+    .info{color:var(--muted);font-size:13px;margin-top:8px}
+    .hidden{position:absolute;left:-9999px}
+    .last{margin-top:12px;font-size:13px;color:#444}
+    .label{font-weight:600}
+    .busy{opacity:.6;pointer-events:none}
+    @media(max-width:640px){.controls{flex-direction:column;align-items:stretch}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" role="application" aria-label="Escaneo de DNI" id="card">
+      <header>
+        <div class="logo">NU</div>
+        <div>
+          <h1>Nuna Orgánica — Escaneo DNI</h1>
+          <div class="subtitle" style="color:var(--muted);font-size:13px;margin-top:4px">
+            Selecciona la sucursal y luego escanee el DNI con el lector (el lector debe enviar <strong>ENTER</strong>).
+          </div>
+        </div>
+      </header>
+
+      <div class="controls">
+        <div>
+          <div class="label">Sucursal</div>
+          <select id="sucursalSelect" aria-label="Seleccionar sucursal">
+            <option value="">-- Seleccionar sucursal --</option>
+            <option value="Los Olivos">Los Olivos</option>
+            <option value="Miraflores">Miraflores</option>
+            <option value="San Isidro">San Isidro</option>
+            <option value="Otra">Otra (escribir)</option>
+          </select>
+        </div>
+
+        <div id="otraWrapper" style="display:none">
+          <div class="label">Especificar</div>
+          <input id="otraInput" class="small-input" placeholder="Escribe sucursal" />
+        </div>
+      </div>
+
+      <div class="info">Nota: hasta que no selecciones la sucursal, los escaneos serán ignorados.</div>
+
+      <!-- input oculto para enfocar (muchos lectores devuelven a elemento con foco) -->
+      <input id="focusField" class="hidden" autocomplete="off" aria-hidden="true" />
+
+      <div id="status" class="status" role="status" aria-live="polite">Esperando sucursal y escaneo...</div>
+      <div class="last">Último registro: <span id="last">—</span></div>
+    </div>
+  </div>
+
+<script>
+/* ---------------------------
+   CONFIG: Pon aquí tu URL (la URL final del WebApp)
+----------------------------*/
+const API_URL = "https://script.google.com/macros/s/AKfycbwfe0e0QixDlRqbrlYtvhuqvlvYSuxRZGeSWXxsyZp1Ek0DzTbr2HxZ7EfOZRX9LT1f/exec";
+
+/* Scanner detection */
+const MAX_INTERVAL = 60; // ms entre teclas para considerar lector
+let buffer = '', lastTime = 0, busy = false;
+
+const card = document.getElementById('card');
+const statusEl = document.getElementById('status');
+const lastEl = document.getElementById('last');
+const sucursalSelect = document.getElementById('sucursalSelect');
+const otraWrapper = document.getElementById('otraWrapper');
+const otraInput = document.getElementById('otraInput');
+const focusField = document.getElementById('focusField');
+
+function doFocus(){ try{ focusField.focus({preventScroll:true}); }catch(e){} }
+window.addEventListener('click', doFocus);
+doFocus(); setInterval(doFocus, 1200);
+
+sucursalSelect.addEventListener('change', () => {
+  if (sucursalSelect.value === 'Otra') {
+    otraWrapper.style.display = 'inline-block';
+    otraInput.focus();
+  } else {
+    otraWrapper.style.display = 'none';
+    statusEl.className = 'status';
+    statusEl.textContent = `Sucursal seleccionada: ${sucursalSelect.value || '—'}. Esperando escaneo...`;
+  }
+});
+
+/* Captura del teclado global (lectores emulan teclado) */
+window.addEventListener('keydown', (e) => {
+  if (busy) return;
+  const now = performance.now();
+  const key = e.key;
+
+  if (key.length > 1 && key !== 'Enter') return;
+
+  const dt = now - lastTime;
+  lastTime = now;
+  if (dt > MAX_INTERVAL && buffer.length > 0) buffer = '';
+
+  if (key === 'Enter') {
+    const raw = buffer;
+    buffer = '';
+    if (raw) processScan(raw.trim());
+    e.preventDefault();
+    return;
+  }
+
+  if (/^[0-9]$/.test(key)) {
+    buffer += key;
+    e.preventDefault();
+  }
+});
+
+/* Validar y enviar */
+function processScan(dni) {
+  const sucursal = (sucursalSelect.value === 'Otra') ? (otraInput.value || '').trim() : sucursalSelect.value;
+  if (!sucursal) {
+    statusEl.className = 'status err';
+    statusEl.textContent = 'Selecciona primero la sucursal antes de escanear.';
+    return;
+  }
+  if (!/^\d{6,9}$/.test(dni)) {
+    statusEl.className = 'status err';
+    statusEl.textContent = `DNI inválido: "${dni}". Intenta de nuevo.`;
+    return;
+  }
+
+  busy = true; card.classList.add('busy');
+  statusEl.textContent = `Escaneado: ${dni} — enviando a ${sucursal}...`;
+
+  sendJson(dni, sucursal)
+    .then(res => {
+      if (res && res.ok) {
+        statusEl.className = 'status ok';
+        statusEl.innerHTML = `Registrado: <strong>${dni}</strong> → <strong>${sucursal}</strong><br><small>${res.timestamp || ''}</small>`;
+        lastEl.textContent = `${dni} · ${sucursal} - ${res.timestamp || new Date().toLocaleString()}`;
+      } else if (res && typeof res === 'string') {
+        // si el WebApp devuelve texto plano "Registro exitoso"
+        statusEl.className = 'status ok';
+        statusEl.innerHTML = `Registrado: <strong>${dni}</strong> → <strong>${sucursal}</strong><br><small>${res}</small>`;
+        lastEl.textContent = `${dni} · ${sucursal} - ${new Date().toLocaleString()}`;
+      } else {
+        statusEl.className = 'status err';
+        statusEl.textContent = `Error backend: ${res && res.error ? res.error : 'no se registró'}`;
+      }
+    })
+    .catch(err => {
+      statusEl.className = 'status err';
+      statusEl.textContent = 'Error de conexión al validar. Comprueba la URL del WebApp y permisos.';
+      console.error('sendJson error:', err);
+    })
+    .finally(()=> { busy=false; card.classList.remove('busy'); doFocus(); });
+}
+
+/* Enviar JSON (lo que espera tu doPost) */
+async function sendJson(dni, sucursal) {
+  const payload = { dni: String(dni), sucursal: String(sucursal) };
+
+  const resp = await fetch(API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    },
+    body: JSON.stringify(payload),
+    // mode: 'cors'  // por defecto
+  });
+
+  // Intentamos parsear JSON; si no hay JSON devolvemos texto
+  const ct = resp.headers.get('content-type') || '';
+  if (ct.indexOf('application/json') !== -1) return await resp.json();
+  const text = await resp.text();
+  return text;
+}
+</script>
+</body>
+</html>
